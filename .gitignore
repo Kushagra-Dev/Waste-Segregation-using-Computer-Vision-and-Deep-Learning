@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebooks
+
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Datasets and processed data
+dataset_split/
+data/
+datasets/
+processed_test/
+processed_train/
+processed_val/
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.npz
+*.npy
+*.csv
+*.tsv
+*.zip
+*.tar
+*.gz
+
+# Experiment logs
+logs/
+runs/
+_experiment/
+events.out.tfevents*
+
+# Model outputs
+outputs/
+checkpoints/
+models/
+*.onnx
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+
+*.log
+*.tmp
+
+.venv/
+venv/
+env/
