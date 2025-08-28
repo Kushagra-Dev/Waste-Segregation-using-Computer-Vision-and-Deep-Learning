@@ -7,6 +7,7 @@ import torchvision.models as models
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
+
 class WasteDataset(Dataset):
     def __init__(self, tensor_root):
         self.samples = []
@@ -26,6 +27,7 @@ class WasteDataset(Dataset):
         path, label = self.samples[idx]
         tensor = torch.load(path)
         return tensor, label
+
 
 def train(model, data_loader, criterion, optimizer, device, epoch, writer):
     model.train()
@@ -48,6 +50,7 @@ def train(model, data_loader, criterion, optimizer, device, epoch, writer):
 
     return running_loss / len(data_loader)
 
+
 def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -55,7 +58,9 @@ def main():
     dataset = WasteDataset("processed_train")
     data_loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=False)
 
-    model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    # Load pretrained ResNet50
+    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+    # Replace the final fully connected layer to match number of classes
     model.fc = nn.Linear(model.fc.in_features, len(dataset.class_to_idx))
     model = model.to(device)
 
@@ -69,10 +74,11 @@ def main():
         loss = train(model, data_loader, criterion, optimizer, device, epoch, writer)
         print(f"Epoch {epoch+1}/{epochs} completed. Average Loss: {loss:.4f}")
 
-    torch.save(model.state_dict(), "model.pth")
-    print("Model saved to model.pth")
+    torch.save(model.state_dict(), "model_resnet50.pth")
+    print("Model saved to model_resnet50.pth")
 
     writer.close()
+
 
 if __name__ == "__main__":
     main()
