@@ -1,31 +1,61 @@
 import os
+import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
+from albumentations import Compose, Resize, Normalize, HorizontalFlip, RandomRotate90, ColorJitter
+from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 
 class WasteDataset(Dataset):
-    def __init__(self, tensor_root):
+    def __init__(self, image_root, train=False, size=(224, 224)):
         self.samples = []
         self.class_to_idx = {}
-        classes = sorted(os.listdir(tensor_root))
+        classes = sorted([d for d in os.listdir(image_root) if os.path.isdir(os.path.join(image_root, d))])
         for idx, cls in enumerate(classes):
             self.class_to_idx[cls] = idx
-            cls_folder = os.path.join(tensor_root, cls)
+            cls_folder = os.path.join(image_root, cls)
             for f in os.listdir(cls_folder):
-                if f.endswith('.pt'):
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                     self.samples.append((os.path.join(cls_folder, f), idx))
+
+        self.train = train
+        self.size = size
+
+        if train:
+            self.transform = Compose([
+                Resize(height=size[0], width=size[1]),
+                HorizontalFlip(p=0.5),
+                RandomRotate90(p=0.5),
+                ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.5),
+                Normalize(mean=(0.485, 0.456, 0.406),
+                          std=(0.229, 0.224, 0.225)),
+                ToTensorV2()
+            ])
+        else:
+            self.transform = Compose([
+                Resize(height=size[0], width=size[1]),
+                Normalize(mean=(0.485, 0.456, 0.406),
+                          std=(0.229, 0.224, 0.225)),
+                ToTensorV2()
+            ])
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
-        tensor = torch.load(path)
+        image = cv2.imread(path)
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        augmented = self.transform(image=image)
+        tensor = augmented['image']
         return tensor, label
 
 
@@ -55,13 +85,14 @@ def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    dataset = WasteDataset("processed_train")
-    data_loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=False)
+    train_dataset = WasteDataset("dataset_split/train", train=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
 
-    # Load pretrained ResNet50
+    val_dataset = WasteDataset("dataset_split/val", train=False)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
+
     model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-    # Replace the final fully connected layer to match number of classes
-    model.fc = nn.Linear(model.fc.in_features, len(dataset.class_to_idx))
+    model.fc = nn.Linear(model.fc.in_features, len(train_dataset.class_to_idx))
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -71,8 +102,8 @@ def main():
 
     epochs = 5
     for epoch in range(epochs):
-        loss = train(model, data_loader, criterion, optimizer, device, epoch, writer)
-        print(f"Epoch {epoch+1}/{epochs} completed. Average Loss: {loss:.4f}")
+        train_loss = train(model, train_loader, criterion, optimizer, device, epoch, writer)
+        print(f"Epoch {epoch + 1}/{epochs} completed. Average Training Loss: {train_loss:.4f}")
 
     torch.save(model.state_dict(), "model_resnet50.pth")
     print("Model saved to model_resnet50.pth")

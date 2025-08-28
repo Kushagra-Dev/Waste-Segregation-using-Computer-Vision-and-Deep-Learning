@@ -2,7 +2,6 @@ import cv2
 import torch
 import torchvision.models as models
 import torch.nn as nn
-import numpy as np
 from albumentations import Compose, Resize, Normalize
 from albumentations.pytorch import ToTensorV2
 
@@ -21,12 +20,11 @@ def preprocess_frame(frame):
     return tensor
 
 def load_model(device):
-    model = models.resnet18(weights=None)
+    model = models.resnet50(weights=None)  # ResNet50 architecture
     model.fc = nn.Linear(model.fc.in_features, len(CLASS_NAMES))
 
-    checkpoint = torch.load("model.pth", map_location=device)
-    filtered_state_dict = {k: v for k, v in checkpoint.items() if not k.startswith('fc.')}
-    model.load_state_dict(filtered_state_dict, strict=False)
+    checkpoint = torch.load("model_resnet50.pth", map_location=device)
+    model.load_state_dict(checkpoint)  # load full weights
 
     model = model.to(device)
     model.eval()
