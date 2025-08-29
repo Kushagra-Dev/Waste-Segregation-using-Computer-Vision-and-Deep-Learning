@@ -10,6 +10,24 @@ from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
+class ResNetSwinHybrid(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        self.resnet_features = nn.Sequential(*list(resnet.children())[:-1])
+
+        swin = models.swin_t(weights=models.Swin_T_Weights.IMAGENET1K_V1)
+        self.swin_features = nn.Sequential(*list(swin.children())[:-1])
+
+        self.classifier = nn.Linear(2048 + 768, num_classes)
+
+    def forward(self, x):
+        resnet_feat = self.resnet_features(x).flatten(1)  
+        swin_feat = self.swin_features(x).squeeze(-1).squeeze(-1)  
+
+        combined = torch.cat([resnet_feat, swin_feat], dim=1)
+        out = self.classifier(combined)
+        return out
 
 class WasteDataset(Dataset):
     def __init__(self, image_root, train=False, size=(224, 224)):
@@ -58,7 +76,6 @@ class WasteDataset(Dataset):
         tensor = augmented['image']
         return tensor, label
 
-
 def train(model, data_loader, criterion, optimizer, device, epoch, writer):
     model.train()
     running_loss = 0.0
@@ -81,32 +98,60 @@ def train(model, data_loader, criterion, optimizer, device, epoch, writer):
     return running_loss / len(data_loader)
 
 
+def validate(model, data_loader, criterion, device, epoch, writer):
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for inputs, targets in tqdm(data_loader, desc="Validation"):
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            running_loss += loss.item()
+
+            _, preds = torch.max(outputs, 1)
+            correct += (preds == targets).sum().item()
+            total += targets.size(0)
+
+    avg_loss = running_loss / len(data_loader)
+    accuracy = correct / total
+    print(f"Validation loss: {avg_loss:.4f}, Accuracy: {accuracy*100:.2f}%")
+    writer.add_scalar('val_loss', avg_loss, epoch)
+    writer.add_scalar('val_accuracy', accuracy, epoch)
+    return avg_loss, accuracy
+
+
 def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
     train_dataset = WasteDataset("dataset_split/train", train=True)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=False)
 
     val_dataset = WasteDataset("dataset_split/val", train=False)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
 
-    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-    model.fc = nn.Linear(model.fc.in_features, len(train_dataset.class_to_idx))
-    model = model.to(device)
+    num_classes = len(train_dataset.class_to_idx)
+    model = ResNetSwinHybrid(num_classes).to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
 
-    writer = SummaryWriter(log_dir="runs/waste_classification_experiment")
+    writer = SummaryWriter(log_dir="runs/waste_classification_hybrid_experiment")
 
-    epochs = 5
+    epochs = 20
+    best_val_acc = 0.0
     for epoch in range(epochs):
         train_loss = train(model, train_loader, criterion, optimizer, device, epoch, writer)
-        print(f"Epoch {epoch + 1}/{epochs} completed. Average Training Loss: {train_loss:.4f}")
+        val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
 
-    torch.save(model.state_dict(), "model_resnet50.pth")
-    print("Model saved to model_resnet50.pth")
+        print(f"Epoch {epoch+1}/{epochs} — Train loss: {train_loss:.4f} | Val loss: {val_loss:.4f} | Val accuracy: {val_acc*100:.2f}%")
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), "best_hybrid_model.pth")
+            print("Saved best hybrid model")
 
     writer.close()
 

@@ -5,11 +5,29 @@ import torchvision.models as models
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
 
+class ResNetSwinHybrid(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        self.resnet_features = nn.Sequential(*list(resnet.children())[:-1])  # Remove fc
+
+        swin = models.swin_t(weights=models.Swin_T_Weights.IMAGENET1K_V1)
+        self.swin_features = nn.Sequential(*list(swin.children())[:-1])  # Remove head
+
+        self.classifier = nn.Linear(2048 + 768, num_classes)
+
+    def forward(self, x):
+        resnet_feat = self.resnet_features(x).flatten(1)  # [batch, 2048]
+        swin_feat = self.swin_features(x).squeeze(-1).squeeze(-1)  # [batch, 768]
+        combined = torch.cat([resnet_feat, swin_feat], dim=1)
+        out = self.classifier(combined)
+        return out
+
 class WasteDataset(Dataset):
     def __init__(self, tensor_root):
         self.samples = []
         self.class_to_idx = {}
-        classes = sorted(os.listdir(tensor_root))
+        classes = sorted([d for d in os.listdir(tensor_root) if os.path.isdir(os.path.join(tensor_root, d))])
         for idx, cls in enumerate(classes):
             self.class_to_idx[cls] = idx
             cls_folder = os.path.join(tensor_root, cls)
@@ -32,10 +50,9 @@ def main():
     dataset = WasteDataset("processed_test")
     data_loader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
 
-    model = models.resnet18(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, len(dataset.class_to_idx))
-    model.load_state_dict(torch.load("model.pth"))
-    model = model.to(device)
+    num_classes = len(dataset.class_to_idx)
+    model = ResNetSwinHybrid(num_classes).to(device)
+    model.load_state_dict(torch.load("best_hybrid_model.pth", map_location=device))
     model.eval()
 
     all_preds = []
