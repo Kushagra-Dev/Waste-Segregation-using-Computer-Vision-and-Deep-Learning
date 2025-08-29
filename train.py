@@ -5,7 +5,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
-from albumentations import Compose, Resize, Normalize, HorizontalFlip, RandomRotate90, ColorJitter
+from albumentations import (
+    Compose, Resize, Normalize, HorizontalFlip, RandomRotate90, ColorJitter,
+    MotionBlur, GaussianBlur, ShiftScaleRotate, CoarseDropout, GaussNoise, Affine, Perspective
+)
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -47,9 +50,16 @@ class WasteDataset(Dataset):
         if train:
             self.transform = Compose([
                 Resize(height=size[0], width=size[1]),
+                ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
                 HorizontalFlip(p=0.5),
                 RandomRotate90(p=0.5),
-                ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.5),
+                Affine(shear=(-15, 15), p=0.3),     
+                Perspective(scale=(0.05, 0.1), p=0.3),
+                MotionBlur(blur_limit=5, p=0.2),
+                GaussianBlur(blur_limit=5, p=0.2),
+                GaussNoise(var_limit=(10.0, 50.0), p=0.2),
+                ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1, p=0.5),
+                CoarseDropout(max_holes=1, max_height=32, max_width=32, p=0.3),
                 Normalize(mean=(0.485, 0.456, 0.406),
                           std=(0.229, 0.224, 0.225)),
                 ToTensorV2()
@@ -61,6 +71,21 @@ class WasteDataset(Dataset):
                           std=(0.229, 0.224, 0.225)),
                 ToTensorV2()
             ])
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label = self.samples[idx]
+        image = cv2.imread(path)
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        augmented = self.transform(image=image)
+        tensor = augmented['image']
+        return tensor, label
+
 
     def __len__(self):
         return len(self.samples)
