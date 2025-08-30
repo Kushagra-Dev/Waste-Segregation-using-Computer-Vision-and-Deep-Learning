@@ -1,9 +1,13 @@
 import os
+import cv2
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset, DataLoader
+from albumentations import Compose, Resize, Normalize
+from albumentations.pytorch import ToTensorV2
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
+from tqdm import tqdm
 
 class ResNetSwinHybrid(nn.Module):
     def __init__(self, num_classes):
@@ -24,33 +28,45 @@ class ResNetSwinHybrid(nn.Module):
         return out
 
 class WasteDataset(Dataset):
-    def __init__(self, tensor_root):
+    def __init__(self, image_root, size=(224, 224)):
         self.samples = []
         self.class_to_idx = {}
-        classes = sorted([d for d in os.listdir(tensor_root) if os.path.isdir(os.path.join(tensor_root, d))])
+        classes = sorted([d for d in os.listdir(image_root) if os.path.isdir(os.path.join(image_root, d))])
         for idx, cls in enumerate(classes):
             self.class_to_idx[cls] = idx
-            cls_folder = os.path.join(tensor_root, cls)
+            cls_folder = os.path.join(image_root, cls)
             for f in os.listdir(cls_folder):
-                if f.endswith('.pt'):
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                     self.samples.append((os.path.join(cls_folder, f), idx))
+
+        self.transform = Compose([
+            Resize(height=size[0], width=size[1]),
+            Normalize(mean=(0.485, 0.456, 0.406),
+                      std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ])
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
-        tensor = torch.load(path)
+        image = cv2.imread(path)
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        augmented = self.transform(image=image)
+        tensor = augmented['image']
         return tensor, label
 
 def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    dataset = WasteDataset("processed_test")
-    data_loader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
+    val_dataset = WasteDataset("dataset_split/val")
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
 
-    num_classes = len(dataset.class_to_idx)
+    num_classes = len(val_dataset.class_to_idx)
     model = ResNetSwinHybrid(num_classes).to(device)
     model.load_state_dict(torch.load("best_hybrid_model.pth", map_location=device))
     model.eval()
@@ -59,7 +75,7 @@ def main():
     all_targets = []
 
     with torch.no_grad():
-        for inputs, targets in data_loader:
+        for inputs, targets in tqdm(val_loader, desc="Evaluating"):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
             _, preds = torch.max(outputs, 1)

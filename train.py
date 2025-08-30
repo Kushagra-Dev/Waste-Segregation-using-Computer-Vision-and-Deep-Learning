@@ -1,5 +1,7 @@
 import os
+import random
 import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,11 +9,12 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 from albumentations import (
     Compose, Resize, Normalize, HorizontalFlip, RandomRotate90, ColorJitter,
-    MotionBlur, GaussianBlur, ShiftScaleRotate, CoarseDropout, GaussNoise, Affine, Perspective
+    MotionBlur, GaussianBlur, GaussNoise, CoarseDropout, Affine, Perspective
 )
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+
 
 class ResNetSwinHybrid(nn.Module):
     def __init__(self, num_classes):
@@ -25,15 +28,15 @@ class ResNetSwinHybrid(nn.Module):
         self.classifier = nn.Linear(2048 + 768, num_classes)
 
     def forward(self, x):
-        resnet_feat = self.resnet_features(x).flatten(1)  
-        swin_feat = self.swin_features(x).squeeze(-1).squeeze(-1)  
-
+        resnet_feat = self.resnet_features(x).flatten(1)
+        swin_feat = self.swin_features(x).squeeze(-1).squeeze(-1)
         combined = torch.cat([resnet_feat, swin_feat], dim=1)
         out = self.classifier(combined)
         return out
 
+
 class WasteDataset(Dataset):
-    def __init__(self, image_root, train=False, size=(224, 224)):
+    def __init__(self, image_root, mask_root=None, bg_root=None, train=False, size=(224, 224)):
         self.samples = []
         self.class_to_idx = {}
         classes = sorted([d for d in os.listdir(image_root) if os.path.isdir(os.path.join(image_root, d))])
@@ -47,19 +50,29 @@ class WasteDataset(Dataset):
         self.train = train
         self.size = size
 
+        self.mask_root = mask_root
+        self.bg_images = []
+        if bg_root and os.path.isdir(bg_root):
+            for root, _, files in os.walk(bg_root):
+                for f in files:
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        bg_path = os.path.join(root, f)
+                        bg_img = cv2.imread(bg_path)
+                        if bg_img is not None:
+                            self.bg_images.append(bg_img)
+
         if train:
             self.transform = Compose([
                 Resize(height=size[0], width=size[1]),
-                ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
+                Affine(translate_percent=0.05, scale=(0.9, 1.1), rotate=(-15, 15), shear=(-15, 15), p=0.5),
                 HorizontalFlip(p=0.5),
                 RandomRotate90(p=0.5),
-                Affine(shear=(-15, 15), p=0.3),     
                 Perspective(scale=(0.05, 0.1), p=0.3),
                 MotionBlur(blur_limit=5, p=0.2),
                 GaussianBlur(blur_limit=5, p=0.2),
-                GaussNoise(var_limit=(10.0, 50.0), p=0.2),
+                GaussNoise(p=0.2),
                 ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1, p=0.5),
-                CoarseDropout(max_holes=1, max_height=32, max_width=32, p=0.3),
+                CoarseDropout(p=0.3),
                 Normalize(mean=(0.485, 0.456, 0.406),
                           std=(0.229, 0.224, 0.225)),
                 ToTensorV2()
@@ -72,6 +85,23 @@ class WasteDataset(Dataset):
                 ToTensorV2()
             ])
 
+    def replace_background(self, image, mask):
+        if not self.bg_images or mask is None:
+            return image
+
+        bg = random.choice(self.bg_images)
+        bg = cv2.resize(bg, (image.shape[1], image.shape[0]))
+
+        if mask.dtype != np.float32:
+            mask = mask.astype(np.float32) / 255.0
+
+        if len(mask.shape) == 2:
+            mask = np.expand_dims(mask, axis=2)
+
+        composite = image.astype(np.float32) * mask + bg.astype(np.float32) * (1 - mask)
+        composite = composite.astype(np.uint8)
+        return composite
+
     def __len__(self):
         return len(self.samples)
 
@@ -82,24 +112,19 @@ class WasteDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        augmented = self.transform(image=image)
-        tensor = augmented['image']
-        return tensor, label
-
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        path, label = self.samples[idx]
-        image = cv2.imread(path)
-        if image is None:
-            raise FileNotFoundError(f"Image not found: {path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Background replacement only during training if masks/backgrounds exist
+        if self.train and self.mask_root and self.bg_images:
+            mask_path = path.replace(os.path.basename(os.path.dirname(path)), os.path.basename(self.mask_root.rstrip(os.sep)))
+            mask_path = os.path.splitext(mask_path)[0] + '.png'
+            if os.path.exists(mask_path):
+                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if mask is not None:
+                    image = self.replace_background(image, mask)
 
         augmented = self.transform(image=image)
         tensor = augmented['image']
         return tensor, label
+
 
 def train(model, data_loader, criterion, optimizer, device, epoch, writer):
     model.train()
@@ -151,10 +176,18 @@ def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    train_dataset = WasteDataset("dataset_split/train", train=True)
+    train_dataset = WasteDataset(
+        image_root="dataset_split/train",
+        mask_root="dataset_split/train_masks",
+        bg_root="/Users/kushagra/Downloads/indoor + outdoor (cear + hazy) bg dataset",
+        train=True
+    )
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=False)
 
-    val_dataset = WasteDataset("dataset_split/val", train=False)
+    val_dataset = WasteDataset(
+        image_root="dataset_split/val",
+        train=False
+    )
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
 
     num_classes = len(train_dataset.class_to_idx)
