@@ -5,7 +5,7 @@ from albumentations import Compose, Resize, Normalize
 from albumentations.pytorch import ToTensorV2
 
 
-INPUT_DIR = "dataset_split/val"  # Change to val or test folder to preprocess
+INPUT_DIR = "dataset_split/test"
 OUTPUT_DIR = f"processed_{os.path.basename(INPUT_DIR)}"
 
 

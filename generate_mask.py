@@ -2,9 +2,8 @@ import os
 import cv2
 import torch
 import numpy as np
-import requests
 from torchvision import transforms
-from torch.autograd import Variable
+
 
 model_path = "u2net.pth"
 
@@ -23,6 +22,7 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
+
 
 def get_mask(image_path):
     image = cv2.imread(image_path)
@@ -44,6 +44,12 @@ def get_mask(image_path):
 
     return binary_mask
 
+
+def mask_quality_check(mask, min_coverage=0.10, max_coverage=0.90):
+    coverage = np.sum(mask == 255) / (mask.shape[0] * mask.shape[1])
+    return min_coverage <= coverage <= max_coverage
+
+
 def process_folder(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
     for root, _, files in os.walk(input_folder):
@@ -54,10 +60,13 @@ def process_folder(input_folder, output_folder):
             if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                 input_path = os.path.join(root, f)
                 mask = get_mask(input_path)
-                if mask is not None:
+                if mask is not None and mask_quality_check(mask):
                     save_path = os.path.join(save_dir, os.path.splitext(f)[0] + '.png')
                     cv2.imwrite(save_path, mask)
                     print(f"Saved mask: {save_path}")
+                else:
+                    print(f"Filtered out poor mask for: {input_path}")
+
 
 if __name__ == "__main__":
     input_images_dir = "dataset_split/train"

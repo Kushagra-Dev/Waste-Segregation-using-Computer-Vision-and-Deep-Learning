@@ -14,6 +14,7 @@ from albumentations import (
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
 class ResNetSwinHybrid(nn.Module):
@@ -49,7 +50,6 @@ class WasteDataset(Dataset):
 
         self.train = train
         self.size = size
-
         self.mask_root = mask_root
         self.bg_images = []
         if bg_root and os.path.isdir(bg_root):
@@ -112,9 +112,9 @@ class WasteDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Background replacement only during training if masks/backgrounds exist
         if self.train and self.mask_root and self.bg_images:
-            mask_path = path.replace(os.path.basename(os.path.dirname(path)), os.path.basename(self.mask_root.rstrip(os.sep)))
+            mask_path = path.replace(os.path.basename(os.path.dirname(path)),
+                                     os.path.basename(self.mask_root.rstrip(os.sep)))
             mask_path = os.path.splitext(mask_path)[0] + '.png'
             if os.path.exists(mask_path):
                 mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -126,15 +126,75 @@ class WasteDataset(Dataset):
         return tensor, label
 
 
-def train(model, data_loader, criterion, optimizer, device, epoch, writer):
+def rand_bbox(size, lam):
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
+
+
+def cutmix(data, targets, alpha=1.0):
+    indices = torch.randperm(data.size(0))
+    shuffled_data = data[indices]
+    shuffled_targets = targets[indices]
+    lam = np.random.beta(alpha, alpha)
+    bbx1, bby1, bbx2, bby2 = rand_bbox(data.size(), lam)
+    new_data = data.clone()
+    new_data[:, :, bbx1:bbx2, bby1:bby2] = shuffled_data[:, :, bbx1:bbx2, bby1:bby2]
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (data.size(-1) * data.size(-2)))
+
+    return new_data, targets, shuffled_targets, lam
+
+
+def remix(data, targets, alpha=1.0):
+    indices = torch.randperm(data.size(0))
+    shuffled_data = data[indices]
+    shuffled_targets = targets[indices]
+    lam = np.random.beta(alpha, alpha)
+
+    batch_size, _, H, W = data.size()
+
+    mask = (torch.rand(batch_size, 1, H, W) < lam).float().to(data.device)
+
+    new_data = data * mask + shuffled_data * (1 - mask)
+    lam = mask.mean().item()
+
+    return new_data, targets, shuffled_targets, lam
+
+
+def train(model, data_loader, criterion, optimizer, device, epoch, writer, cutmix_prob=0.3, remix_prob=0.1):
     model.train()
     running_loss = 0.0
     progress_bar = tqdm(data_loader, desc=f"Epoch {epoch + 1}")
+
     for batch_idx, (inputs, targets) in enumerate(progress_bar):
         inputs, targets = inputs.to(device), targets.to(device)
+
+        r = random.random()
+        if r < cutmix_prob:
+            inputs, targets_a, targets_b, lam = cutmix(inputs, targets)
+            outputs = model(inputs)
+            loss = lam * criterion(outputs, targets_a) + (1 - lam) * criterion(outputs, targets_b)
+        elif r < cutmix_prob + remix_prob:
+            inputs, targets_a, targets_b, lam = remix(inputs, targets)
+            outputs = model(inputs)
+            loss = lam * criterion(outputs, targets_a) + (1 - lam) * criterion(outputs, targets_b)
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+
         optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
 
@@ -182,13 +242,13 @@ def main():
         bg_root="/Users/kushagra/Downloads/indoor + outdoor (cear + hazy) bg dataset",
         train=True
     )
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=False)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=0, pin_memory=False)
 
     val_dataset = WasteDataset(
         image_root="dataset_split/val",
         train=False
     )
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=False)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=0, pin_memory=False)
 
     num_classes = len(train_dataset.class_to_idx)
     model = ResNetSwinHybrid(num_classes).to(device)
@@ -196,15 +256,19 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
 
+    epochs = 20
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+
     writer = SummaryWriter(log_dir="runs/waste_classification_hybrid_experiment")
 
-    epochs = 20
     best_val_acc = 0.0
     for epoch in range(epochs):
         train_loss = train(model, train_loader, criterion, optimizer, device, epoch, writer)
         val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
 
-        print(f"Epoch {epoch+1}/{epochs} — Train loss: {train_loss:.4f} | Val loss: {val_loss:.4f} | Val accuracy: {val_acc*100:.2f}%")
+        print(f"Epoch {epoch + 1}/{epochs} — Train loss: {train_loss:.4f} | Val loss: {val_loss:.4f} | Val accuracy: {val_acc * 100:.2f}%")
+
+        scheduler.step()
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
