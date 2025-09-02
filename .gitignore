@@ -63,6 +63,7 @@ models/
 
 *.log
 *.tmp
+*.png
 
 .venv/
 venv/

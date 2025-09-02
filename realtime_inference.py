@@ -16,17 +16,15 @@ def get_class_names_from_folder(image_root="dataset_split/train"):
 CLASS_NAMES = get_class_names_from_folder()
 
 WASTE_TYPE_MAPPING = {
-    'Textile Trash' : 'Textile Trash - Reusable waste',
     'battery': 'battery - Hazardous Waste',
-    'biological': 'biological - Biohazard Waste',
+    'biological': 'biological - Bio Waste',
     'cardboard': 'Cardboard - Recyclable Waste',
     'clothes': 'Clothes - Reusable Waste',
     'glass': 'glass - Recyclable Waste',
     'metal': 'metal - Recyclable Waste',
     'paper': 'paper - Recyclable Waste',
     'plastic': 'plastic - Non Recyclable Waste',
-    'shoes': 'shoes - Reusable Waste',
-    'trash': 'trash - General Waste'
+    'shoes': 'footwear - Reusable Waste',
 }
 
 transform = Compose([
@@ -42,7 +40,7 @@ class ResNetSwinHybrid(nn.Module):
         self.resnet_features = nn.Sequential(*list(resnet.children())[:-2])
         self.resnet_avgpool = nn.AdaptiveAvgPool2d((1, 1))
         swin = models.swin_t(weights=models.Swin_T_Weights.IMAGENET1K_V1)
-        self.swin_features = nn.Sequential(*list(swin.children())[:-1])  # Remove head
+        self.swin_features = nn.Sequential(*list(swin.children())[:-1])
         self.classifier = nn.Linear(2048 + 768, num_classes)
         self.gradients = None
         self.resnet_features[-1].register_full_backward_hook(self.save_gradient)

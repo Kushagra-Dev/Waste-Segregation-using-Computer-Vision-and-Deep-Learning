@@ -11,7 +11,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-#CLASS_NAMES = ['battery','biological','cardboard','clothes','glass','metal', 'paper','plastic', 'shoes','Textile Trash', 'trash']
+#CLASS_NAMES = ['battery','biological','cardboard','clothes','glass','metal', 'paper','plastic', 'shoes']
 
 class ResNetSwinHybrid(nn.Module):
     def __init__(self, num_classes):
@@ -73,7 +73,6 @@ def plot_confusion_matrix(cm, classes):
     plt.show()
 
 def main():
-    # Device setup
     if torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.cuda.is_available():
@@ -82,10 +81,9 @@ def main():
         device = torch.device("cpu")
     print(f"Using device: {device}")
 
-    # Load validation dataset
     val_dataset = WasteDataset("dataset_split/val")
 
-    # Dynamically build CLASS_NAMES list from dataset's class_to_idx mapping
+    # Dynamically build class names
     class_names = [None] * len(val_dataset.class_to_idx)
     for cls_name, idx in val_dataset.class_to_idx.items():
         class_names[idx] = cls_name
@@ -109,7 +107,6 @@ def main():
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
 
-    # Compute overall metrics
     accuracy = accuracy_score(all_targets, all_preds)
     precision, recall, f1_score, _ = precision_recall_fscore_support(all_targets, all_preds, average='weighted')
     precision_cls, recall_cls, f1_cls, _ = precision_recall_fscore_support(all_targets, all_preds, average=None)
@@ -127,7 +124,7 @@ def main():
     print("\nConfusion Matrix:")
     print(conf_matrix)
 
-    # Visualize confusion matrix (optional)
+
     plot_confusion_matrix(conf_matrix, class_names)
 
 

@@ -4,12 +4,17 @@ import torch
 import numpy as np
 from torchvision import transforms
 
-
 model_path = "u2net.pth"
 
 from u2net import U2NET
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
 net = U2NET(3, 1)
 net.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 net.to(device)
@@ -23,7 +28,6 @@ transform = transforms.Compose([
                          std=[0.229, 0.224, 0.225])
 ])
 
-
 def get_mask(image_path):
     image = cv2.imread(image_path)
     if image is None:
@@ -36,7 +40,7 @@ def get_mask(image_path):
         d1, *_ = net(img)
 
     pred = d1.squeeze().cpu().numpy()
-    pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)  # Normalize 0-1
+    pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
     mask = (pred * 255).astype(np.uint8)
     mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
 
@@ -44,11 +48,9 @@ def get_mask(image_path):
 
     return binary_mask
 
-
 def mask_quality_check(mask, min_coverage=0.10, max_coverage=0.90):
     coverage = np.sum(mask == 255) / (mask.shape[0] * mask.shape[1])
     return min_coverage <= coverage <= max_coverage
-
 
 def process_folder(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
@@ -66,7 +68,6 @@ def process_folder(input_folder, output_folder):
                     print(f"Saved mask: {save_path}")
                 else:
                     print(f"Filtered out poor mask for: {input_path}")
-
 
 if __name__ == "__main__":
     input_images_dir = "dataset_split/train"

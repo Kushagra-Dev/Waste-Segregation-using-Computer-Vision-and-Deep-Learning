@@ -256,7 +256,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
 
-    epochs = 20
+    epochs = 30
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
 
     writer = SummaryWriter(log_dir="runs/waste_classification_hybrid_experiment")
